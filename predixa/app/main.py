@@ -1,0 +1,80 @@
+from fastapi import FastAPI, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.encoders import jsonable_encoder
+
+import joblib
+import numpy as np
+import os
+
+from sqlalchemy.orm import Session
+from db.database import SessionLocal
+from db.models import Prediction
+
+# ------------------ APP INIT ------------------
+app = FastAPI(
+    title="Predixa API",
+    redirect_slashes=False  # ✅ prevents 302 redirect issue
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ------------------ MODEL LOAD ------------------
+MODEL_PATH = "model/price_model.pkl"
+
+if not os.path.exists(MODEL_PATH):
+    raise RuntimeError("Model not found. Train it first.")
+
+model = joblib.load(MODEL_PATH)
+
+# ------------------ DB DEP ------------------
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# ------------------ ROUTES ------------------
+@app.get("/")
+def home():
+    return {"message": "Predixa API is running 🚀"}
+
+@app.get("/predict")
+@app.get("/predict/")
+def predict(days: int, db: Session = Depends(get_db)):
+    try:
+        prediction_value = model.predict(np.array([[days]]))[0]
+
+        record = Prediction(
+            days_ahead=days,
+            predicted_price=float(prediction_value)
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+
+        return {
+            "days_ahead": days,
+            "predicted_price": round(float(prediction_value), 2),
+            "saved": True
+        }
+
+    except Exception as e:
+        print("❌ BACKEND ERROR:", e)
+        return {"error": str(e)}
+
+@app.get("/history")
+@app.get("/history/")
+def history(db: Session = Depends(get_db)):
+    records = (
+        db.query(Prediction)
+        .order_by(Prediction.created_at.desc())
+        .all()
+    )
+    return jsonable_encoder(records)
